@@ -1,0 +1,15 @@
+[package]
+name = "structured-web"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "*"
+http-body-util = "*"
+hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
+futures = { version = "0.3", features = ["executor"] }
+moro = { path = "../../../moro" }
+pin-project-lite = "*"
+pollster = "0.3"
+pretty_env_logger = "*"
+tokio = { version = "1", features = ["rt", "net", "time"] }
