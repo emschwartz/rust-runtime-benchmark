@@ -78,14 +78,10 @@ fn main() {
             .build()
             .expect("build runtime");
 
-        // Combine it with a `LocalSet,  which means it can spawn !Send futures...
-        let local = tokio::task::LocalSet::new();
-        local
-            .block_on(
-                &rt,
-                http2_client("http://localhost:3000".parse::<hyper::Uri>().unwrap()),
-            )
-            .unwrap();
+        rt.block_on(http2_client(
+            "http://localhost:3000".parse::<hyper::Uri>().unwrap(),
+        ))
+        .unwrap();
     });
 
     let server_http1 = thread::spawn(move || {
@@ -105,14 +101,10 @@ fn main() {
             .build()
             .expect("build runtime");
 
-        // Combine it with a `LocalSet,  which means it can spawn !Send futures...
-        let local = tokio::task::LocalSet::new();
-        local
-            .block_on(
-                &rt,
-                http1_client("http://localhost:3001".parse::<hyper::Uri>().unwrap()),
-            )
-            .unwrap();
+        rt.block_on(http1_client(
+            "http://localhost:3001".parse::<hyper::Uri>().unwrap(),
+        ))
+        .unwrap();
     });
 
     server_http2.join().unwrap();
@@ -127,7 +119,6 @@ async fn http1_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(addr).await?;
 
-    // For each connection, clone the counter to use in our service...
     let counter = Cell::new(0);
 
     let service = service_fn(|_| async {
@@ -166,50 +157,53 @@ async fn http1_client(url: hyper::Uri) -> Result<(), Box<dyn std::error::Error>>
 
     let (mut sender, conn) = hyper::client::conn::http1::handshake(io).await?;
 
-    tokio::task::spawn_local(async move {
-        if let Err(err) = conn.await {
+    async_scope!(|scope| {
+        scope.spawn(async move {
+            if let Err(err) = conn.await {
+                let mut stdout = io::stdout();
+                stdout
+                    .write_all(format!("Connection failed: {:?}", err).as_bytes())
+                    .await
+                    .unwrap();
+                stdout.flush().await.unwrap();
+            }
+        });
+
+        let authority = url.authority().unwrap().clone();
+
+        // Make 4 requests
+        for _ in 0..4 {
+            let req = Request::builder()
+                .uri(url.clone())
+                .header(hyper::header::HOST, authority.as_str())
+                .body(Body::from("test".to_string()))?;
+
+            let mut res = sender.send_request(req).await?;
+
             let mut stdout = io::stdout();
             stdout
-                .write_all(format!("Connection failed: {:?}", err).as_bytes())
+                .write_all(format!("Response: {}\n", res.status()).as_bytes())
+                .await
+                .unwrap();
+            stdout
+                .write_all(format!("Headers: {:#?}\n", res.headers()).as_bytes())
                 .await
                 .unwrap();
             stdout.flush().await.unwrap();
-        }
-    });
 
-    let authority = url.authority().unwrap().clone();
-
-    // Make 4 requests
-    for _ in 0..4 {
-        let req = Request::builder()
-            .uri(url.clone())
-            .header(hyper::header::HOST, authority.as_str())
-            .body(Body::from("test".to_string()))?;
-
-        let mut res = sender.send_request(req).await?;
-
-        let mut stdout = io::stdout();
-        stdout
-            .write_all(format!("Response: {}\n", res.status()).as_bytes())
-            .await
-            .unwrap();
-        stdout
-            .write_all(format!("Headers: {:#?}\n", res.headers()).as_bytes())
-            .await
-            .unwrap();
-        stdout.flush().await.unwrap();
-
-        // Print the response body
-        while let Some(next) = res.frame().await {
-            let frame = next?;
-            if let Some(chunk) = frame.data_ref() {
-                stdout.write_all(&chunk).await.unwrap();
+            // Print the response body
+            while let Some(next) = res.frame().await {
+                let frame = next?;
+                if let Some(chunk) = frame.data_ref() {
+                    stdout.write_all(&chunk).await.unwrap();
+                }
             }
+            stdout.write_all(b"\n-----------------\n").await.unwrap();
+            stdout.flush().await.unwrap();
         }
-        stdout.write_all(b"\n-----------------\n").await.unwrap();
-        stdout.flush().await.unwrap();
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 async fn http2_server() -> Result<(), Box<dyn std::error::Error>> {
@@ -217,7 +211,7 @@ async fn http2_server() -> Result<(), Box<dyn std::error::Error>> {
 
     let addr: SocketAddr = ([127, 0, 0, 1], 3000).into();
     // Using a !Send request counter is fine on 1 thread...
-    let counter = Rc::new(Cell::new(0));
+    let counter = Cell::new(0);
 
     let listener = TcpListener::bind(addr).await?;
 
@@ -227,34 +221,34 @@ async fn http2_server() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap();
     stdout.flush().await.unwrap();
 
-    loop {
-        let (stream, _) = listener.accept().await?;
-        let io = IOTypeNotSend::new(TokioIo::new(stream));
+    let service = service_fn(|_| {
+        let prev = counter.get();
+        counter.set(prev + 1);
+        let value = counter.get();
+        async move { Ok::<_, Error>(Response::new(Body::from(format!("Request #{}", value)))) }
+    });
 
-        // For each connection, clone the counter to use in our service...
-        let cnt = counter.clone();
+    async_scope!(|scope| {
+        loop {
+            let (stream, _) = listener.accept().await?;
+            let io = IOTypeNotSend::new(TokioIo::new(stream));
 
-        let service = service_fn(move |_| {
-            let prev = cnt.get();
-            cnt.set(prev + 1);
-            let value = cnt.get();
-            async move { Ok::<_, Error>(Response::new(Body::from(format!("Request #{}", value)))) }
-        });
-
-        tokio::task::spawn_local(async move {
-            if let Err(err) = http2::Builder::new(LocalExec)
-                .serve_connection(io, service)
-                .await
-            {
-                let mut stdout = io::stdout();
-                stdout
-                    .write_all(format!("Error serving connection: {:?}", err).as_bytes())
+            scope.spawn(async {
+                if let Err(err) = http2::Builder::new(LocalExec::new(scope))
+                    .serve_connection(io, service)
                     .await
-                    .unwrap();
-                stdout.flush().await.unwrap();
-            }
-        });
-    }
+                {
+                    let mut stdout = io::stdout();
+                    stdout
+                        .write_all(format!("Error serving connection: {:?}", err).as_bytes())
+                        .await
+                        .unwrap();
+                    stdout.flush().await.unwrap();
+                }
+            });
+        }
+    })
+    .await
 }
 
 async fn http2_client(url: hyper::Uri) -> Result<(), Box<dyn std::error::Error>> {
@@ -265,68 +259,91 @@ async fn http2_client(url: hyper::Uri) -> Result<(), Box<dyn std::error::Error>>
 
     let stream = IOTypeNotSend::new(TokioIo::new(stream));
 
-    let (mut sender, conn) = hyper::client::conn::http2::handshake(LocalExec, stream).await?;
+    async_scope!(|scope| {
+        let (mut sender, conn) =
+            hyper::client::conn::http2::handshake(LocalExec::new(scope), stream).await?;
 
-    tokio::task::spawn_local(async move {
-        if let Err(err) = conn.await {
+        scope.spawn(async {
+            if let Err(err) = conn.await {
+                let mut stdout = io::stdout();
+                stdout
+                    .write_all(format!("Connection failed: {:?}", err).as_bytes())
+                    .await
+                    .unwrap();
+                stdout.flush().await.unwrap();
+            }
+        });
+
+        let authority = url.authority().unwrap().clone();
+
+        // Make 4 requests
+        for _ in 0..4 {
+            let req = Request::builder()
+                .uri(url.clone())
+                .header(hyper::header::HOST, authority.as_str())
+                .body(Body::from("test".to_string()))?;
+
+            let mut res = sender.send_request(req).await?;
+
             let mut stdout = io::stdout();
             stdout
-                .write_all(format!("Connection failed: {:?}", err).as_bytes())
+                .write_all(format!("Response: {}\n", res.status()).as_bytes())
+                .await
+                .unwrap();
+            stdout
+                .write_all(format!("Headers: {:#?}\n", res.headers()).as_bytes())
                 .await
                 .unwrap();
             stdout.flush().await.unwrap();
-        }
-    });
 
-    let authority = url.authority().unwrap().clone();
-
-    // Make 4 requests
-    for _ in 0..4 {
-        let req = Request::builder()
-            .uri(url.clone())
-            .header(hyper::header::HOST, authority.as_str())
-            .body(Body::from("test".to_string()))?;
-
-        let mut res = sender.send_request(req).await?;
-
-        let mut stdout = io::stdout();
-        stdout
-            .write_all(format!("Response: {}\n", res.status()).as_bytes())
-            .await
-            .unwrap();
-        stdout
-            .write_all(format!("Headers: {:#?}\n", res.headers()).as_bytes())
-            .await
-            .unwrap();
-        stdout.flush().await.unwrap();
-
-        // Print the response body
-        while let Some(next) = res.frame().await {
-            let frame = next?;
-            if let Some(chunk) = frame.data_ref() {
-                stdout.write_all(&chunk).await.unwrap();
+            // Print the response body
+            while let Some(next) = res.frame().await {
+                let frame = next?;
+                if let Some(chunk) = frame.data_ref() {
+                    stdout.write_all(&chunk).await.unwrap();
+                }
             }
+            stdout.write_all(b"\n-----------------\n").await.unwrap();
+            stdout.flush().await.unwrap();
         }
-        stdout.write_all(b"\n-----------------\n").await.unwrap();
-        stdout.flush().await.unwrap();
-    }
-    Ok(())
+        Ok(())
+    })
+    .await
 }
 
 // NOTE: This part is only needed for HTTP/2. HTTP/1 doesn't need an executor.
 //
 // Since the Server needs to spawn some background tasks, we needed
 // to configure an Executor that can spawn !Send futures...
-#[derive(Clone, Copy, Debug)]
-struct LocalExec;
 
-impl<F> hyper::rt::Executor<F> for LocalExec
+struct LocalExec<'scope, 'env, R: 'env> {
+    scope: Rc<&'scope moro::Scope<'scope, 'env, R>>,
+}
+
+impl<'scope, 'env, R: 'env> LocalExec<'scope, 'env, R> {
+    fn new(scope: &'scope moro::Scope<'scope, 'env, R>) -> Self {
+        Self {
+            scope: Rc::new(scope),
+        }
+    }
+}
+
+// We need a manual implementation of Clone so that it uses Rc::clone
+// (because Scope isn't Clone)
+impl<'scope, 'env, R: 'env> Clone for LocalExec<'scope, 'env, R> {
+    fn clone(&self) -> Self {
+        Self {
+            scope: Rc::clone(&self.scope),
+        }
+    }
+}
+
+impl<'scope, 'env, F, R: 'env> hyper::rt::Executor<F> for LocalExec<'scope, 'env, R>
 where
-    F: std::future::Future + 'static, // not requiring `Send`
+    F: std::future::Future + 'scope,
 {
     fn execute(&self, fut: F) {
-        // This will spawn into the currently running `LocalSet`.
-        tokio::task::spawn_local(fut);
+        self.scope.spawn(fut);
     }
 }
 
