@@ -1,3 +1,4 @@
+use core::num;
 use std::cell::{Cell, RefCell};
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicU32;
@@ -46,7 +47,7 @@ impl HttpBody for Body {
 fn main() {
     pretty_env_logger::init();
 
-    #[cfg(feature = "multi-thread")]
+    #[cfg(feature = "work-stealing")]
     {
         let rt = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -56,22 +57,51 @@ fn main() {
         rt.block_on(http_server_multi_thread()).unwrap();
     }
 
-    #[cfg(feature = "single-thread")]
+    #[cfg(feature = "thread-per-core")]
     {
+        let num_cpus: usize = std::thread::available_parallelism().unwrap().into();
+        let num_workders: usize = num_cpus - 1;
+        let mut handles: Vec<tokio::sync::mpsc::Sender<TcpStream>> = Vec::new();
+
+        for _ in 0..num_workders {
+            let (tx, rx) = tokio::sync::mpsc::channel(1);
+            handles.push(tx);
+            std::thread::spawn(move || {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("build runtime");
+
+                rt.block_on(http_server_thread_per_core(rx)).unwrap();
+            });
+        }
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("build runtime");
 
-        rt.block_on(http_server_single_thread()).unwrap();
+        rt.block_on(async {
+            let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+
+            let listener = TcpListener::bind(addr).await.expect("Bind error");
+
+            let mut conn_index = 0;
+            loop {
+                let (stream, _) = listener.accept().await.expect("Accept error");
+                handles[conn_index]
+                    .send(stream)
+                    .await
+                    .expect("Error sending to worker");
+
+                conn_index = (conn_index + 1) % num_workders;
+            }
+        });
     }
 }
 
-async fn http_server_single_thread() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-
-    let listener = TcpListener::bind(addr).await?;
-
+async fn http_server_thread_per_core(
+    mut rx: tokio::sync::mpsc::Receiver<TcpStream>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let counter = RefCell::new(0);
 
     let service = service_fn(|_| async {
@@ -82,9 +112,11 @@ async fn http_server_single_thread() -> Result<(), Box<dyn std::error::Error>> {
 
     async_scope!(|scope| {
         loop {
-            let (stream, _) = listener.accept().await?;
-
-            let io = TokioIo::new(stream);
+            let io = if let Some(stream) = rx.recv().await {
+                TokioIo::new(stream)
+            } else {
+                break;
+            };
 
             scope.spawn(async {
                 if let Err(err) = hyper::server::conn::http1::Builder::new()
@@ -96,7 +128,8 @@ async fn http_server_single_thread() -> Result<(), Box<dyn std::error::Error>> {
             });
         }
     })
-    .await
+    .await;
+    Ok(())
 }
 
 async fn http_server_multi_thread() -> Result<(), Box<dyn std::error::Error>> {

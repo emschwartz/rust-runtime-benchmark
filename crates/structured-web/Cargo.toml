@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["single-thread"]
-multi-thread = ["tokio/rt-multi-thread"]
-single-thread = []
+default = ["thread-per-core"]
+work-stealing = ["tokio/rt-multi-thread"]
+thread-per-core = []
 
 [dependencies]
 axum = "*"
