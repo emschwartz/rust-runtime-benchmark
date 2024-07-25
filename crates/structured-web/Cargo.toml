@@ -3,6 +3,11 @@ name = "structured-web"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+default = ["single-thread"]
+multi-thread = ["tokio/rt-multi-thread"]
+single-thread = []
+
 [dependencies]
 axum = "*"
 http-body-util = "*"
