@@ -4,9 +4,11 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["thread-per-core"]
+default = ["active-connection-count"]
 work-stealing = ["tokio/rt-multi-thread"]
-thread-per-core = []
+connection-count = []
+active-connection-count = []
+round-robin = []
 
 [dependencies]
 axum = "*"

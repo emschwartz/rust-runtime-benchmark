@@ -1,7 +1,6 @@
-use core::num;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::net::SocketAddr;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -57,79 +56,140 @@ fn main() {
         rt.block_on(http_server_multi_thread()).unwrap();
     }
 
-    #[cfg(feature = "thread-per-core")]
-    {
-        let num_cpus: usize = std::thread::available_parallelism().unwrap().into();
-        let num_workders: usize = num_cpus - 1;
-        let mut handles: Vec<tokio::sync::mpsc::Sender<TcpStream>> = Vec::new();
+    #[cfg(feature = "round-robin")]
+    round_robin_server();
 
-        for _ in 0..num_workders {
-            let (tx, rx) = tokio::sync::mpsc::channel(1);
-            handles.push(tx);
-            std::thread::spawn(move || {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .expect("build runtime");
-
-                rt.block_on(http_server_thread_per_core(rx)).unwrap();
-            });
-        }
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("build runtime");
-
-        rt.block_on(async {
-            let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
-
-            let listener = TcpListener::bind(addr).await.expect("Bind error");
-
-            let mut conn_index = 0;
-            loop {
-                let (stream, _) = listener.accept().await.expect("Accept error");
-                handles[conn_index]
-                    .send(stream)
-                    .await
-                    .expect("Error sending to worker");
-
-                conn_index = (conn_index + 1) % num_workders;
-            }
-        });
-    }
+    #[cfg(feature = "active-connection-count")]
+    active_connection_count_server();
 }
 
-async fn http_server_thread_per_core(
-    mut rx: tokio::sync::mpsc::Receiver<TcpStream>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let counter = RefCell::new(0);
+fn active_connection_count_server() {
+    let num_cpus: usize = std::thread::available_parallelism().unwrap().get();
+    let num_workders: usize = num_cpus - 1;
+    let mut handles: Vec<(tokio::sync::mpsc::Sender<TcpStream>, Arc<AtomicU32>)> = Vec::new();
 
-    let service = service_fn(|_| async {
-        *counter.borrow_mut() += 1;
-        let value = counter.borrow();
-        Ok::<_, Error>(Response::new(Body::from(format!("Request #{}", value))))
-    });
+    for _ in 0..num_workders {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let connection_count = Arc::new(AtomicU32::new(0));
+        handles.push((tx, connection_count.clone()));
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime");
 
-    async_scope!(|scope| {
+            rt.block_on(async move {
+                let service = service_fn(|_| async {
+                    Ok::<_, Error>(Response::new(Body::from("Hello world!".to_string())))
+                });
+
+                async_scope!(|scope| {
+                    loop {
+                        let io = if let Some(stream) = rx.recv().await {
+                            TokioIo::new(stream)
+                        } else {
+                            break;
+                        };
+
+                        connection_count.fetch_add(1, Ordering::Relaxed);
+
+                        scope.spawn(async {
+                            if let Err(err) = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, service)
+                                .await
+                            {
+                                println!("Error serving connection: {:?}", err);
+                            }
+
+                            connection_count.fetch_sub(1, Ordering::Relaxed);
+                        });
+                    }
+                })
+                .await;
+            })
+            // pollster::block_on(http_server_thread_per_core(rx)).unwrap();
+        });
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    rt.block_on(async {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+
+        let listener = TcpListener::bind(addr).await.expect("Bind error");
+
         loop {
-            let io = if let Some(stream) = rx.recv().await {
-                TokioIo::new(stream)
-            } else {
-                break;
-            };
-
-            scope.spawn(async {
-                if let Err(err) = hyper::server::conn::http1::Builder::new()
-                    .serve_connection(io, service)
-                    .await
-                {
-                    println!("Error serving connection: {:?}", err);
-                }
-            });
+            let (stream, _) = listener.accept().await.expect("Accept error");
+            handles.sort_by_key(|(_, count)| count.load(Ordering::Relaxed));
+            let conn = handles.first().unwrap().0.clone();
+            tokio::spawn(async move { conn.send(stream).await });
         }
-    })
-    .await;
-    Ok(())
+    });
+}
+
+fn round_robin_server() {
+    let num_cpus: usize = std::thread::available_parallelism().unwrap().get();
+    let num_workers: usize = num_cpus - 1;
+    let mut handles: Vec<tokio::sync::mpsc::Sender<TcpStream>> = Vec::new();
+
+    for _ in 0..num_workers {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        handles.push(tx);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("build runtime");
+
+            rt.block_on(async move {
+                let service = service_fn(|_| async {
+                    Ok::<_, Error>(Response::new(Body::from("Hello world!".to_string())))
+                });
+
+                async_scope!(|scope| {
+                    loop {
+                        let io = if let Some(stream) = rx.recv().await {
+                            TokioIo::new(stream)
+                        } else {
+                            break;
+                        };
+
+                        scope.spawn(async {
+                            if let Err(err) = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, service)
+                                .await
+                            {
+                                println!("Error serving connection: {:?}", err);
+                            }
+                        });
+                    }
+                })
+                .await;
+            })
+            // pollster::block_on(http_server_thread_per_core(rx)).unwrap();
+        });
+    }
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build runtime");
+
+    rt.block_on(async {
+        let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+
+        let listener = TcpListener::bind(addr).await.expect("Bind error");
+
+        let mut worker_index = 0;
+        loop {
+            let (stream, _) = listener.accept().await.expect("Accept error");
+            let conn = handles[worker_index].clone();
+            tokio::spawn(async move { conn.send(stream).await });
+
+            worker_index = (worker_index + 1) % num_workers;
+        }
+    });
 }
 
 async fn http_server_multi_thread() -> Result<(), Box<dyn std::error::Error>> {
@@ -137,15 +197,8 @@ async fn http_server_multi_thread() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener = TcpListener::bind(addr).await?;
 
-    let counter = Arc::new(AtomicU32::new(0));
-
-    let service = service_fn(move |_| {
-        let counter = counter.clone();
-        async move {
-            let value = counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            Ok::<_, Error>(Response::new(format!("Request #{}", value)))
-        }
-    });
+    let service =
+        service_fn(move |_| async { Ok::<_, Error>(Response::new("Hello world!".to_string())) });
 
     loop {
         let (stream, _) = listener.accept().await?;
