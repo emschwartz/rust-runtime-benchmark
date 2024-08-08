@@ -9,6 +9,7 @@ work-stealing = ["tokio/rt-multi-thread"]
 connection-count = []
 active-connection-count = []
 round-robin = []
+glommio = []
 
 [dependencies]
 hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
@@ -18,3 +19,4 @@ pin-project-lite = "*"
 pollster = "0.3"
 pretty_env_logger = "*"
 tokio = { version = "1", features = ["rt", "net", "time"] }
+glommio = "0.9.0"

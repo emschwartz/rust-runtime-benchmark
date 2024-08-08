@@ -4,12 +4,14 @@ use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Sender};
 
+use glommio::{LocalExecutorPoolBuilder, PoolPlacement};
 use hyper::service::service_fn;
 use hyper::{Error, Response};
 use moro::async_scope;
 
 mod support;
 use support::{Body, TokioIo};
+mod glommio;
 
 fn main() {
     pretty_env_logger::init();
@@ -26,6 +28,9 @@ fn main() {
 
     #[cfg(feature = "round-robin")]
     round_robin_server();
+
+    #[cfg(feature = "glommio")]
+    glommio::glommio_server();
 
     #[cfg(feature = "active-connection-count")]
     active_connection_count_server();
