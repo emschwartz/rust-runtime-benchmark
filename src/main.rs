@@ -1,47 +1,15 @@
-use std::cell::RefCell;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc::{channel, Sender};
 
-use hyper::body::{Body as HttpBody, Bytes, Frame};
 use hyper::service::service_fn;
 use hyper::{Error, Response};
 use moro::async_scope;
-use std::marker::PhantomData;
-use std::pin::Pin;
-use std::task::{Context, Poll};
-use tokio::net::TcpStream;
 
 mod support;
-use support::TokioIo;
-
-struct Body {
-    // Our Body type is !Send and !Sync:
-    _marker: PhantomData<*const ()>,
-    data: Option<Bytes>,
-}
-
-impl From<String> for Body {
-    fn from(a: String) -> Self {
-        Body {
-            _marker: PhantomData,
-            data: Some(a.into()),
-        }
-    }
-}
-
-impl HttpBody for Body {
-    type Data = Bytes;
-    type Error = Error;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        _: &mut Context<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Poll::Ready(self.get_mut().data.take().map(|d| Ok(Frame::data(d))))
-    }
-}
+use support::{Body, TokioIo};
 
 fn main() {
     pretty_env_logger::init();
@@ -66,10 +34,10 @@ fn main() {
 fn active_connection_count_server() {
     let num_cpus: usize = std::thread::available_parallelism().unwrap().get();
     let num_workders: usize = num_cpus - 1;
-    let mut handles: Vec<(tokio::sync::mpsc::Sender<TcpStream>, Arc<AtomicU32>)> = Vec::new();
+    let mut handles: Vec<(Sender<TcpStream>, Arc<AtomicU32>)> = Vec::new();
 
     for _ in 0..num_workders {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (tx, mut rx) = channel(1);
         let connection_count = Arc::new(AtomicU32::new(0));
         handles.push((tx, connection_count.clone()));
         std::thread::spawn(move || {
@@ -214,53 +182,5 @@ async fn http_server_multi_thread() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Error serving connection: {:?}", err);
             }
         });
-    }
-}
-
-struct IOTypeNotSend {
-    _marker: PhantomData<*const ()>,
-    stream: TokioIo<TcpStream>,
-}
-
-impl IOTypeNotSend {
-    fn new(stream: TokioIo<TcpStream>) -> Self {
-        Self {
-            _marker: PhantomData,
-            stream,
-        }
-    }
-}
-
-impl hyper::rt::Write for IOTypeNotSend {
-    fn poll_write(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self.stream).poll_write(cx, buf)
-    }
-
-    fn poll_flush(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self.stream).poll_flush(cx)
-    }
-
-    fn poll_shutdown(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self.stream).poll_shutdown(cx)
-    }
-}
-
-impl hyper::rt::Read for IOTypeNotSend {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: hyper::rt::ReadBufCursor<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.stream).poll_read(cx, buf)
     }
 }

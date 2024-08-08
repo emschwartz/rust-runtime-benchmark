@@ -11,11 +11,9 @@ active-connection-count = []
 round-robin = []
 
 [dependencies]
-axum = "*"
-http-body-util = "*"
 hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
 futures = { version = "0.3", features = ["executor"] }
-moro = { path = "../../../moro" }
+moro = { path = "../moro" }
 pin-project-lite = "*"
 pollster = "0.3"
 pretty_env_logger = "*"

@@ -7,8 +7,13 @@ use std::{
     time::{Duration, Instant},
 };
 
+use hyper::body::{Body as HttpBody, Bytes, Frame};
 use hyper::rt::{Sleep, Timer};
+use hyper::Error;
 use pin_project_lite::pin_project;
+use tokio::net::TcpStream;
+
+use std::marker::PhantomData;
 
 #[derive(Clone)]
 /// An Executor that uses the tokio runtime.
@@ -224,5 +229,80 @@ where
         bufs: &[std::io::IoSlice<'_>],
     ) -> Poll<Result<usize, std::io::Error>> {
         hyper::rt::Write::poll_write_vectored(self.project().inner, cx, bufs)
+    }
+}
+
+pub struct IOTypeNotSend {
+    _marker: PhantomData<*const ()>,
+    stream: TokioIo<TcpStream>,
+}
+
+impl IOTypeNotSend {
+    fn new(stream: TokioIo<TcpStream>) -> Self {
+        Self {
+            _marker: PhantomData,
+            stream,
+        }
+    }
+}
+
+impl hyper::rt::Write for IOTypeNotSend {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<Result<usize, std::io::Error>> {
+        Pin::new(&mut self.stream).poll_write(cx, buf)
+    }
+
+    fn poll_flush(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.stream).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<(), std::io::Error>> {
+        Pin::new(&mut self.stream).poll_shutdown(cx)
+    }
+}
+
+impl hyper::rt::Read for IOTypeNotSend {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: hyper::rt::ReadBufCursor<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.stream).poll_read(cx, buf)
+    }
+}
+
+pub struct Body {
+    // Our Body type is !Send and !Sync:
+    _marker: PhantomData<*const ()>,
+    data: Option<Bytes>,
+}
+
+impl From<String> for Body {
+    fn from(a: String) -> Self {
+        Body {
+            _marker: PhantomData,
+            data: Some(a.into()),
+        }
+    }
+}
+
+impl HttpBody for Body {
+    type Data = Bytes;
+    type Error = Error;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        _: &mut Context<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        Poll::Ready(self.get_mut().data.take().map(|d| Ok(Frame::data(d))))
     }
 }
