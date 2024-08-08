@@ -89,7 +89,7 @@ fn active_connection_count_server() {
         .expect("build runtime");
 
     rt.block_on(async {
-        let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
         let listener = TcpListener::bind(addr).await.expect("Bind error");
 
@@ -150,7 +150,7 @@ fn round_robin_server() {
         .expect("build runtime");
 
     rt.block_on(async {
-        let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+        let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
         let listener = TcpListener::bind(addr).await.expect("Bind error");
 
@@ -166,7 +166,7 @@ fn round_robin_server() {
 }
 
 async fn http_server_multi_thread() -> Result<(), Box<dyn std::error::Error>> {
-    let addr = SocketAddr::from(([127, 0, 0, 1], 3000));
+    let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
 
     let listener = TcpListener::bind(addr).await?;
 
