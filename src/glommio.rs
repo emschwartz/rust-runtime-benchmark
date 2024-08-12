@@ -118,32 +118,29 @@ mod hyper_compat {
     {
         let listener = TcpListener::bind(addr.into())?;
         let conn_control = Rc::new(Semaphore::new(max_connections as _));
-        async_scope!(|scope| {
-            loop {
-                match listener.accept().await {
-                    Err(x) => {
-                        return Err::<(), GlommioError<_>>(x.into());
-                    }
-                    Ok(stream) => {
-                        scope.spawn(async {
-                            let addr = stream.local_addr().unwrap();
-                            let io = HyperStream(stream);
-                            let _permit = conn_control.acquire_permit(1).await;
-                            if let Err(err) = hyper::server::conn::http1::Builder::new()
-                                .serve_connection(io, service_fn(service))
-                                .await
-                            {
-                                if !err.is_incomplete_message() {
-                                    eprintln!("Stream from {addr:?} failed with error {err:?}");
-                                }
+        loop {
+            match listener.accept().await {
+                Err(x) => {
+                    return Err(x.into());
+                }
+                Ok(stream) => {
+                    glommio::spawn_local(enclose! {(conn_control) async move {
+                        let addr = stream.local_addr().unwrap();
+                        let io = HyperStream(stream);
+                        let _permit = conn_control.acquire_permit(1).await;
+                        if let Err(err) = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(io, service_fn(service))
+                            .await
+                        {
+                            if !err.is_incomplete_message() {
+                                eprintln!("Stream from {addr:?} failed with error {err:?}");
                             }
-                        });
-                    }
+                        }
+                    }})
+                    .detach();
                 }
             }
-        })
-        .await;
-        Ok(())
+        }
     }
 
     pub(crate) async fn serve_http2<S, F, R, A>(

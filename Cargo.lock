@@ -789,6 +789,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "runtime-benchmark"
+version = "0.1.0"
+dependencies = [
+ "futures",
+ "futures-lite",
+ "glommio",
+ "hyper",
+ "moro",
+ "pin-project-lite",
+ "pollster",
+ "pretty_env_logger",
+ "tokio",
+]
+
+[[package]]
 name = "rustc-demangle"
 version = "0.1.24"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -873,21 +888,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6980e8d7511241f8acf4aebddbb1ff938df5eebe98691418c4468d0b72a96a67"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "structured-web"
-version = "0.1.0"
-dependencies = [
- "futures",
- "futures-lite",
- "glommio",
- "hyper",
- "moro",
- "pin-project-lite",
- "pollster",
- "pretty_env_logger",
- "tokio",
 ]
 
 [[package]]

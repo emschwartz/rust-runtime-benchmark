@@ -1,4 +1,3 @@
-use core::num;
 use hyper::service::service_fn;
 use hyper::{Error, Response};
 use moro::async_scope;
