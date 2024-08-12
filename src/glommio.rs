@@ -6,6 +6,7 @@ mod hyper_compat {
         enclose,
         net::{TcpListener, TcpStream},
         sync::Semaphore,
+        GlommioError,
     };
     use hyper::{
         body::{Body as HttpBody, Bytes, Frame, Incoming},
@@ -121,24 +122,28 @@ mod hyper_compat {
             loop {
                 match listener.accept().await {
                     Err(x) => {
-                        return Err(x.into());
+                        return Err::<(), GlommioError<_>>(x.into());
                     }
-                    Ok(stream) => scope.spawn(async {
-                        let addr = stream.local_addr().unwrap();
-                        let io = HyperStream(stream);
-                        let _permit = conn_control.acquire_permit(1).await;
-                        if let Err(err) = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(io, service_fn(service))
-                            .await
-                        {
-                            if !err.is_incomplete_message() {
-                                eprintln!("Stream from {addr:?} failed with error {err:?}");
+                    Ok(stream) => {
+                        scope.spawn(async {
+                            let addr = stream.local_addr().unwrap();
+                            let io = HyperStream(stream);
+                            let _permit = conn_control.acquire_permit(1).await;
+                            if let Err(err) = hyper::server::conn::http1::Builder::new()
+                                .serve_connection(io, service_fn(service))
+                                .await
+                            {
+                                if !err.is_incomplete_message() {
+                                    eprintln!("Stream from {addr:?} failed with error {err:?}");
+                                }
                             }
-                        }
-                    }),
+                        });
+                    }
                 }
             }
         })
+        .await;
+        Ok(())
     }
 
     pub(crate) async fn serve_http2<S, F, R, A>(
@@ -176,7 +181,8 @@ mod hyper_compat {
     }
 }
 
-use glommio::{CpuSet, LocalExecutorPoolBuilder, PoolPlacement};
+use crate::num_cpus;
+use glommio::{CpuSet, LocalExecutorBuilder, LocalExecutorPoolBuilder, Placement, PoolPlacement};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use hyper_compat::ResponseBody;
 use std::convert::Infallible;
@@ -193,17 +199,25 @@ async fn hyper_demo(req: Request<Incoming>) -> Result<Response<ResponseBody>, In
 }
 
 pub fn glommio_server() {
-    LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(
-        num_cpus::get(),
-        CpuSet::online().ok(),
-    ))
-    .on_all_shards(|| async {
-        let id = glommio::executor().id();
-        println!("Starting executor {id}");
-        hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)
-            .await
-            .unwrap();
-    })
-    .unwrap()
-    .join_all();
+    LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(num_cpus(), CpuSet::online().ok()))
+        .on_all_shards(|| async {
+            let id = glommio::executor().id();
+            println!("Starting executor {id}");
+            hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)
+                .await
+                .unwrap();
+        })
+        .unwrap()
+        .join_all();
+}
+
+pub fn glommio_single_thread_server() {
+    LocalExecutorBuilder::new(Placement::Fixed(0))
+        .spawn(|| async {
+            hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)
+                .await
+                .unwrap();
+        })
+        .unwrap()
+        .join();
 }

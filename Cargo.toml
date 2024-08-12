@@ -4,19 +4,21 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-default = ["active-connection-count"]
-work-stealing = ["tokio/rt-multi-thread"]
-connection-count = []
-active-connection-count = []
-round-robin = []
-glommio = []
+default = ["tokio-active-connection-count"]
+tokio-work-stealing = ["tokio/rt-multi-thread"]
+tokio-active-connection-count = []
+tokio-round-robin = []
+glommio = ["dep:glommio"]
+glommio-single-thread = ["dep:glommio"]
+tokio-single-thread = []
 
 [dependencies]
 hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
 futures = { version = "0.3", features = ["executor"] }
-moro = { path = "../moro" }
+futures-lite = "*"
+moro = { git = "https://github.com/emschwartz/moro.git", branch = "stable" }
 pin-project-lite = "*"
 pollster = "0.3"
 pretty_env_logger = "*"
-tokio = { version = "1", features = ["rt", "net", "time"] }
-glommio = "0.9.0"
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "net", "time"] }
+glommio = { version = "0.9.0", optional = true }

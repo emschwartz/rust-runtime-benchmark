@@ -619,6 +619,7 @@ dependencies = [
 [[package]]
 name = "moro"
 version = "0.4.0"
+source = "git+https://github.com/emschwartz/moro.git?branch=stable#54d7c6e7128300beb7516c2af54cc31e1390e8dd"
 dependencies = [
  "async-trait",
  "futures",
@@ -879,6 +880,7 @@ name = "structured-web"
 version = "0.1.0"
 dependencies = [
  "futures",
+ "futures-lite",
  "glommio",
  "hyper",
  "moro",
