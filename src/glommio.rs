@@ -1,5 +1,6 @@
-// Provide --http1 or --http2 arg in run command
-// cargo run --example hyper_server -- --http1
+// This code is adapted from Glommio's Hyper example:
+// https://github.com/DataDog/glommio/blob/d3f6e7a2ee7fb071ada163edcf90fc3286424c31/examples/hyper_server.rs
+
 mod hyper_compat {
     use futures_lite::{AsyncRead, AsyncWrite, Future};
     use glommio::{
@@ -195,7 +196,7 @@ async fn hyper_demo(req: Request<Incoming>) -> Result<Response<ResponseBody>, In
     // }
 }
 
-pub fn glommio_server() {
+pub fn multi_thread_server() {
     LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(num_cpus(), CpuSet::online().ok()))
         .on_all_shards(|| async {
             let id = glommio::executor().id();
@@ -208,7 +209,7 @@ pub fn glommio_server() {
         .join_all();
 }
 
-pub fn glommio_single_thread_server() {
+pub fn single_thread_server() {
     LocalExecutorBuilder::new(Placement::Fixed(0))
         .spawn(|| async {
             hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)

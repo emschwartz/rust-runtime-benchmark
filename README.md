@@ -15,6 +15,8 @@ Where the feature is one of:
 
 And you can adjust the number of threads that will be used by the multi-threaded versions using the `NUM_THREADS` environment variable.
 
+Note that you must be running on Linux with a [supported kernel version](https://github.com/DataDog/glommio?tab=readme-ov-file#supported-linux-kernels) in order to run the glommio versions.
+
 ## Running the benchmark
 
 You can use the [`wrk`](https://github.com/wg/wrk) tool to run the benchmark.
