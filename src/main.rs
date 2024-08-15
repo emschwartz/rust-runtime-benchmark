@@ -25,6 +25,32 @@ fn main() {
         Ok::<_, Error>(Response::new("Hello world!".to_string()))
     });
 
+    #[cfg(feature = "sleep-service")]
+    let service = service_fn(move |_req: hyper::Request<Incoming>| async {
+        async {
+            sleep(Duration::from_micros(100));
+            Ok::<_, Error>(Response::new("Hello world!".to_string()))
+        }
+        .await
+    });
+
+    #[cfg(feature = "random-sleep-service")]
+    let service = service_fn(move |_req: hyper::Request<Incoming>| async {
+        use rand::Rng;
+
+        async {
+            let num_awaits: usize = rand::thread_rng().gen_range(0..=10);
+            for _i in 0..num_awaits {
+                async {
+                    std::thread::sleep(std::time::Duration::from_micros(10));
+                }
+                .await
+            }
+            Ok::<_, Error>(Response::new("Hello world!".to_string()))
+        }
+        .await
+    });
+
     #[cfg(feature = "tokio-work-stealing")]
     tokio::work_stealing_server(service);
 
