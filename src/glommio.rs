@@ -11,7 +11,7 @@ mod hyper_compat {
     };
     use hyper::{
         body::{Body as HttpBody, Bytes, Frame, Incoming},
-        service::service_fn,
+        service::Service,
         Error, Request, Response,
     };
     use moro::async_scope;
@@ -106,7 +106,7 @@ mod hyper_compat {
         }
     }
 
-    pub(crate) async fn serve_http1<S, F, R, A>(
+    pub(crate) async fn serve_http1<S, A>(
         addr: A,
         service: S,
         max_connections: usize,
@@ -116,7 +116,6 @@ mod hyper_compat {
             + Clone
             + Send
             + 'static,
-        R: std::error::Error + 'static + Send + Sync,
         A: Into<SocketAddr>,
     {
         let listener = TcpListener::bind(addr.into())?;
