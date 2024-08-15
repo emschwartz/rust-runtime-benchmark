@@ -1,8 +1,10 @@
 use crate::num_cpus;
-use crate::support::{Body, TokioIo};
-use hyper::service::service_fn;
-use hyper::{Error, Response};
+use crate::support::TokioIo;
+use hyper::body::Incoming;
+use hyper::service::Service;
+use hyper::{Error, Request, Response};
 use moro::async_scope;
+use std::future::Future;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
@@ -10,17 +12,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc::{channel, Sender};
 
 #[cfg(feature = "tokio-single-thread")]
-pub fn single_thread_server() {
+pub fn single_thread_server(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error> + Clone,
+) {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("build runtime");
 
     rt.block_on(async move {
-        let service = service_fn(|_| async {
-            Ok::<_, Error>(Response::new(Body::from("Hello world!".to_string())))
-        });
-
         let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
         let listener = TcpListener::bind(addr).await.expect("Bind error");
 
@@ -29,6 +29,7 @@ pub fn single_thread_server() {
                 let (stream, _) = listener.accept().await.expect("Accept error");
                 let io = TokioIo::new(stream);
 
+                let service = service.clone();
                 scope.spawn(async {
                     if let Err(err) = hyper::server::conn::http1::Builder::new()
                         .serve_connection(io, service)
@@ -44,7 +45,14 @@ pub fn single_thread_server() {
 }
 
 #[cfg(feature = "tokio-work-stealing")]
-pub fn work_stealing_server() {
+pub fn work_stealing_server<Fut>(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error, Future = Fut>
+        + Clone
+        + Send
+        + 'static,
+) where
+    Fut: Future<Output = Result<Response<String>, Error>> + Send + 'static,
+{
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(num_cpus())
         .enable_all()
@@ -54,10 +62,6 @@ pub fn work_stealing_server() {
     rt.block_on(async {
         let addr = SocketAddr::from(([0, 0, 0, 0], 3000));
         let listener = TcpListener::bind(addr).await.expect("Bind error");
-
-        let service = service_fn(move |_| async {
-            Ok::<_, Error>(Response::new("Hello world!".to_string()))
-        });
 
         loop {
             let (stream, _) = listener.accept().await.expect("Accept error");
@@ -78,7 +82,12 @@ pub fn work_stealing_server() {
 }
 
 #[cfg(feature = "tokio-active-connection-count")]
-pub fn active_connection_count_server() {
+pub fn active_connection_count_server(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error>
+        + Clone
+        + Send
+        + 'static,
+) {
     let num_workders: usize = num_cpus() - 1;
     let mut handles: Vec<(Sender<TcpStream>, Arc<AtomicU32>)> = Vec::new();
 
@@ -86,17 +95,14 @@ pub fn active_connection_count_server() {
         let (tx, mut rx) = channel(1);
         let connection_count = Arc::new(AtomicU32::new(0));
         handles.push((tx, connection_count.clone()));
+        let service = service.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .expect("build runtime");
 
-            rt.block_on(async move {
-                let service = service_fn(|_| async {
-                    Ok::<_, Error>(Response::new(Body::from("Hello world!".to_string())))
-                });
-
+            rt.block_on(async {
                 async_scope!(|scope| {
                     loop {
                         let io = if let Some(stream) = rx.recv().await {
@@ -107,6 +113,7 @@ pub fn active_connection_count_server() {
 
                         connection_count.fetch_add(1, Ordering::Relaxed);
 
+                        let service = service.clone();
                         scope.spawn(async {
                             if let Err(err) = hyper::server::conn::http1::Builder::new()
                                 .serve_connection(io, service)
@@ -142,13 +149,19 @@ pub fn active_connection_count_server() {
 }
 
 #[cfg(feature = "tokio-round-robin")]
-pub fn round_robin_server() {
+pub fn round_robin_server(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error>
+        + Clone
+        + Send
+        + 'static,
+) {
     let num_workers: usize = num_cpus() - 1;
     let mut handles: Vec<tokio::sync::mpsc::Sender<TcpStream>> = Vec::new();
 
     for _ in 0..num_workers {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         handles.push(tx);
+        let service = service.clone();
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -156,10 +169,6 @@ pub fn round_robin_server() {
                 .expect("build runtime");
 
             rt.block_on(async move {
-                let service = service_fn(|_| async {
-                    Ok::<_, Error>(Response::new(Body::from("Hello world!".to_string())))
-                });
-
                 async_scope!(|scope| {
                     loop {
                         let io = if let Some(stream) = rx.recv().await {
@@ -168,6 +177,7 @@ pub fn round_robin_server() {
                             break;
                         };
 
+                        let service = service.clone();
                         scope.spawn(async {
                             if let Err(err) = hyper::server::conn::http1::Builder::new()
                                 .serve_connection(io, service)

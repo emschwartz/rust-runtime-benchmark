@@ -180,28 +180,22 @@ mod hyper_compat {
 }
 
 use crate::num_cpus;
-use glommio::{CpuSet, LocalExecutorBuilder, LocalExecutorPoolBuilder, Placement, PoolPlacement};
+use glommio::{CpuSet, LocalExecutor, LocalExecutorPoolBuilder, Placement, PoolPlacement};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
 use hyper_compat::ResponseBody;
 use std::convert::Infallible;
 
-async fn hyper_demo(req: Request<Incoming>) -> Result<Response<ResponseBody>, Infallible> {
-    Ok(Response::new(ResponseBody::from("Hello world!")))
-    // match (req.method(), req.uri().path()) {
-    //     (&Method::GET, "/hello") => Ok(Response::new(ResponseBody::from("world"))),
-    //     _ => Ok(Response::builder()
-    //         .status(StatusCode::NOT_FOUND)
-    //         .body(ResponseBody::from("notfound"))
-    //         .unwrap()),
-    // }
-}
-
-pub fn multi_thread_server() {
+pub fn multi_thread_server(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error>
+        + Clone
+        + Send
+        + 'static,
+) {
     LocalExecutorPoolBuilder::new(PoolPlacement::MaxSpread(num_cpus(), CpuSet::online().ok()))
         .on_all_shards(|| async {
             let id = glommio::executor().id();
             println!("Starting executor {id}");
-            hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)
+            hyper_compat::serve_http1(([0, 0, 0, 0], 3000), service, 1024)
                 .await
                 .unwrap();
         })
@@ -209,13 +203,15 @@ pub fn multi_thread_server() {
         .join_all();
 }
 
-pub fn single_thread_server() {
-    LocalExecutorBuilder::new(Placement::Fixed(0))
-        .spawn(|| async {
-            hyper_compat::serve_http1(([0, 0, 0, 0], 3000), hyper_demo, 1024)
-                .await
-                .unwrap();
-        })
-        .unwrap()
-        .join();
+pub fn single_thread_server(
+    service: impl Service<Request<Incoming>, Response = Response<String>, Error = Error>
+        + Clone
+        + Send
+        + 'static,
+) {
+    LocalExecutor::default().run(|| async {
+        hyper_compat::serve_http1(([0, 0, 0, 0], 3000), service, 1024)
+            .await
+            .unwrap();
+    });
 }
