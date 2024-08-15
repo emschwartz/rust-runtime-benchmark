@@ -112,8 +112,10 @@ mod hyper_compat {
         max_connections: usize,
     ) -> io::Result<()>
     where
-        S: Fn(Request<Incoming>) -> F + 'static + Copy,
-        F: Future<Output = Result<Response<ResponseBody>, R>>,
+        S: Service<Request<Incoming>, Response = Response<String>, Error = Error>
+            + Clone
+            + Send
+            + 'static,
         R: std::error::Error + 'static + Send + Sync,
         A: Into<SocketAddr>,
     {
@@ -125,12 +127,13 @@ mod hyper_compat {
                     return Err(x.into());
                 }
                 Ok(stream) => {
+                    let service = service.clone();
                     glommio::spawn_local(enclose! {(conn_control) async move {
                         let addr = stream.local_addr().unwrap();
                         let io = HyperStream(stream);
                         let _permit = conn_control.acquire_permit(1).await;
                         if let Err(err) = hyper::server::conn::http1::Builder::new()
-                            .serve_connection(io, service_fn(service))
+                            .serve_connection(io, service)
                             .await
                         {
                             if !err.is_incomplete_message() {
@@ -143,45 +146,11 @@ mod hyper_compat {
             }
         }
     }
-
-    pub(crate) async fn serve_http2<S, F, R, A>(
-        addr: A,
-        service: S,
-        max_connections: usize,
-    ) -> io::Result<()>
-    where
-        S: Fn(Request<Incoming>) -> F + 'static + Copy,
-        F: Future<Output = Result<Response<ResponseBody>, R>> + 'static,
-        R: std::error::Error + 'static + Send + Sync,
-        A: Into<SocketAddr>,
-    {
-        let listener = TcpListener::bind(addr.into())?;
-        let conn_control = Rc::new(Semaphore::new(max_connections as _));
-        loop {
-            match listener.accept().await {
-                Err(x) => {
-                    return Err(x.into());
-                }
-                Ok(stream) => {
-                    let addr = stream.local_addr().unwrap();
-                    let io = HyperStream(stream);
-                    glommio::spawn_local(enclose! {(conn_control) async move {
-                        let _permit = conn_control.acquire_permit(1).await;
-                        if let Err(err) = hyper::server::conn::http2::Builder::new(HyperExecutor).serve_connection(io, service_fn(service)).await {
-                            if !err.is_incomplete_message() {
-                                eprintln!("Stream from {addr:?} failed with error {err:?}");
-                            }
-                        }
-                    }}).detach();
-                }
-            }
-        }
-    }
 }
 
 use crate::num_cpus;
 use glommio::{CpuSet, LocalExecutor, LocalExecutorPoolBuilder, Placement, PoolPlacement};
-use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper::{body::Incoming, service::Service, Error, Method, Request, Response, StatusCode};
 use hyper_compat::ResponseBody;
 use std::convert::Infallible;
 
@@ -209,7 +178,7 @@ pub fn single_thread_server(
         + Send
         + 'static,
 ) {
-    LocalExecutor::default().run(|| async {
+    LocalExecutor::default().run(async {
         hyper_compat::serve_http1(([0, 0, 0, 0], 3000), service, 1024)
             .await
             .unwrap();

@@ -11,6 +11,8 @@ tokio-round-robin = []
 glommio = ["dep:glommio"]
 glommio-single-thread = ["dep:glommio"]
 tokio-single-thread = []
+sleep-service = []
+random-sleep-service = []
 
 [dependencies]
 hyper = { version = "*", features = ["client", "server", "http1", "http2"] }
